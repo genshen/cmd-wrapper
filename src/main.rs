@@ -1,13 +1,6 @@
+use std::collections::HashMap;
 use std::env;
-
-
-fn pass_by(debug: bool) {
-
-}
-
-fn env() {
- println!("Env:");
-}
+use std::process;
 
 fn help() {
     println!("usage:
@@ -30,7 +23,88 @@ Available environment variables:
 }
 
 fn version(app: String) {
+    println!("{}", app)
+}
 
+// cat two Vec<T>
+fn cat<T: Clone>(a: &[T], b: &[T]) -> Vec<T> {
+    let mut v = Vec::with_capacity(a.len() + b.len());
+    v.extend_from_slice(a);
+    v.extend_from_slice(b);
+    v
+}
+
+fn vec_of_str(v: Vec<&str>) -> Vec<String> {
+    v.iter().map(|&x| x.into()).collect()
+}
+
+fn load_env(name: &str, fallback: &str) -> String {
+    let env_val = match env::var(name) {
+        Ok(v) => { v }
+        Err(_e) => {
+            String::from(fallback)
+        }
+    };
+    return env_val;
+}
+
+fn remove_dup_args(args: Vec<String>) -> Vec<String> {
+    let remove_dup_args_env = load_env("WRAPPED_REMOVE_DUP_ARGS", "");
+    let remove_dup_args: Vec<String> = vec_of_str(remove_dup_args_env.split(':').collect());
+
+    let mut rm_map = HashMap::new();
+    for rm_arg in &remove_dup_args {
+        rm_map.insert(rm_arg, false);
+    }
+
+    let mut new_arg_list: Vec<String> = Vec::new();
+    for arg in &args {
+        match rm_map.get(&arg) {
+            None => {
+                new_arg_list.push(arg.to_string());
+            }
+            Some(dup) => {
+                if !dup { // first time appear
+                    new_arg_list.push(arg.to_string());
+                    rm_map.insert(&arg, true);
+                }
+            }
+        }
+    }
+    return new_arg_list;
+}
+
+fn pass_by(debug: bool, args: Vec<String>) {
+    let prepend_args_env = load_env("WRAPPED_PREPEND_ARGS", "");
+    let prepend_args: Vec<&str> = prepend_args_env.split(':').collect();
+
+    let prepend_args_in_vec: Vec<String> = vec_of_str(prepend_args);
+    let removed_args_in_vec: Vec<String> = remove_dup_args(args);
+    let new_args: Vec<String> = cat(&*prepend_args_in_vec, &*removed_args_in_vec);
+    if debug {
+        println!("full arguments: {:?}", new_args);
+    }
+
+    // read main program from env.
+    let wrapper_cmd: String = match env::var("WRAPPED_CMD") {
+        Ok(lang) => lang,
+        Err(e) => {
+            println!("Couldn't use environment variable `WRAPPED_CMD` ({})", e);
+            return;
+        }
+    };
+
+    let mut child = process::Command::new(wrapper_cmd)
+        .args(new_args)
+        .stdout(process::Stdio::inherit())
+        .stderr(process::Stdio::inherit())
+        .spawn()
+        .unwrap();
+    child.wait().unwrap();
+}
+
+fn env() {
+    println!("Env:");
 }
 
 fn main() {
@@ -40,7 +114,7 @@ fn main() {
         // no arguments passed
         1 => {
             help();
-        },
+        }
         // other cases
         _ => {
             let cmd = &args[1];
@@ -48,12 +122,12 @@ fn main() {
             match &cmd[..] {
                 "--help" => help(),
                 "--env" => env(),
-                "--debug" => pass_by(true),
+                "--debug" => pass_by(true, args[2..].to_vec()),
                 "-V" => version(args[0].clone()),
                 _ => {
-                    pass_by(false);
-                },
+                    pass_by(false, args[1..].to_vec());
+                }
             }
-        },
+        }
     }
 }
