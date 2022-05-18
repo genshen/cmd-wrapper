@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::env;
 use std::process;
+use git_version::git_version;
+
+const GIT_VERSION: &str = git_version!();
 
 fn help() {
     println!("usage:
@@ -20,10 +23,12 @@ Available environment variables:
     ${{WRAPPED_REMOVE_ARGS}}: the arguments to be removed.
     ${{WRAPPED_PREPEND_ARGS}} : the arguments to be appended in frontend of the arguments list.
 ");
+    // ${{WRAPPED_PREPEND_IF}} : regex for arguments prepending. Only the regex matched, will prepending be performed.
 }
 
 fn version(app: String) {
-    println!("{}", app)
+    println!("{}", app);
+    println!("version: {}", GIT_VERSION);
 }
 
 // cat two Vec<T>
