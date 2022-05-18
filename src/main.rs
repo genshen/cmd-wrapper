@@ -80,13 +80,26 @@ fn remove_dup_args(args: Vec<String>) -> Vec<String> {
     return new_arg_list;
 }
 
-fn pass_by(debug: bool, args: Vec<String>) -> i32 {
+fn parse_prepend_args_env() -> Vec<String> {
     let prepend_args_env = load_env("WRAPPED_PREPEND_ARGS", "");
-    let prepend_args: Vec<&str> = prepend_args_env.split(':').collect();
+    if prepend_args_env != "" {
+        let prepend_args: Vec<&str> = prepend_args_env.split(':').collect();
+        return vec_of_str(prepend_args);
+    } else {
+        return Vec::new();
+    }
+}
 
-    let prepend_args_in_vec: Vec<String> = vec_of_str(prepend_args);
+fn pass_by(debug: bool, args: Vec<String>) -> i32 {
     let removed_args_in_vec: Vec<String> = remove_dup_args(args);
-    let new_args: Vec<String> = cat(&*prepend_args_in_vec, &*removed_args_in_vec);
+    let prepend_args_in_vec: Vec<String> = parse_prepend_args_env();
+    let new_args: Vec<String> = if prepend_args_in_vec.len() != 0 {
+        // if prepend is set, use it.
+        cat(&*prepend_args_in_vec, &*removed_args_in_vec)
+    } else {
+        removed_args_in_vec
+    };
+
     if debug {
         println!("full arguments: {:?}", new_args);
     }
