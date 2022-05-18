@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::process;
+use std::process::exit;
 use git_version::git_version;
 
 const GIT_VERSION: &str = git_version!();
@@ -79,7 +80,7 @@ fn remove_dup_args(args: Vec<String>) -> Vec<String> {
     return new_arg_list;
 }
 
-fn pass_by(debug: bool, args: Vec<String>) {
+fn pass_by(debug: bool, args: Vec<String>) -> i32 {
     let prepend_args_env = load_env("WRAPPED_PREPEND_ARGS", "");
     let prepend_args: Vec<&str> = prepend_args_env.split(':').collect();
 
@@ -95,7 +96,7 @@ fn pass_by(debug: bool, args: Vec<String>) {
         Ok(lang) => lang,
         Err(e) => {
             println!("Couldn't use environment variable `WRAPPED_CMD` ({})", e);
-            return;
+            return 1;
         }
     };
 
@@ -105,7 +106,12 @@ fn pass_by(debug: bool, args: Vec<String>) {
         .stderr(process::Stdio::inherit())
         .spawn()
         .unwrap();
-    child.wait().unwrap();
+    let status = child.wait().unwrap();
+
+    return match status.code() {
+        Some(code) => { code } // Exited with status code: {}"
+        None => { -1 } // Process terminated by signal"
+    };
 }
 
 fn env() {
@@ -114,6 +120,7 @@ fn env() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    //   debug_to_file(format!("{:?}", args));
 
     match args.len() {
         // no arguments passed
@@ -127,10 +134,12 @@ fn main() {
             match &cmd[..] {
                 "--help" => help(),
                 "--env" => env(),
-                "--debug" => pass_by(true, args[2..].to_vec()),
+                "--debug" => {
+                    exit(pass_by(true, args[2..].to_vec()));
+                }
                 "-V" => version(args[0].clone()),
                 _ => {
-                    pass_by(false, args[1..].to_vec());
+                    exit(pass_by(false, args[1..].to_vec()));
                 }
             }
         }
