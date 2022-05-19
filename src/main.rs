@@ -81,11 +81,15 @@ fn remove_dup_args(args: &Vec<String>) -> Vec<String> {
     return new_arg_list;
 }
 
-fn check_prepend_if(origin_args: &Vec<String>) -> Result<bool, regex::Error> {
+fn check_prepend_if(debug: bool, origin_args: &Vec<String>) -> Result<bool, regex::Error> {
     // check prepend condition
     let prepend_if_env = load_env("WRAPPED_PREPEND_IF", "");
     if prepend_if_env == "" {
         return Ok(true);
+    }
+
+    if debug {
+        println!("cmd-wrapper: the regex: `{}`", prepend_if_env);
     }
 
     let formatted = format!(r"{}", prepend_if_env);
@@ -104,10 +108,10 @@ fn check_prepend_if(origin_args: &Vec<String>) -> Result<bool, regex::Error> {
     return Ok(false);
 }
 
-fn parse_prepend_args_env(origin_args: &Vec<String>) -> Vec<String> {
+fn parse_prepend_args_env(debug: bool, origin_args: &Vec<String>) -> Vec<String> {
     let prepend_args_env = load_env("WRAPPED_PREPEND_ARGS", "");
     if prepend_args_env != "" {
-        match check_prepend_if(origin_args) {
+        match check_prepend_if(debug, origin_args) {
             Ok(ok) => {
                 if ok {
                     let prepend_args: Vec<&str> = prepend_args_env.split(':').collect();
@@ -126,7 +130,7 @@ fn parse_prepend_args_env(origin_args: &Vec<String>) -> Vec<String> {
 
 fn pass_by(debug: bool, args: Vec<String>) -> i32 {
     let removed_args_in_vec: Vec<String> = remove_dup_args(&args);
-    let prepend_args_in_vec: Vec<String> = parse_prepend_args_env(&args);
+    let prepend_args_in_vec: Vec<String> = parse_prepend_args_env(debug, &args);
     let new_args: Vec<String> = if prepend_args_in_vec.len() != 0 {
         // if prepend is set, use it.
         cat(&*prepend_args_in_vec, &*removed_args_in_vec)
@@ -135,7 +139,7 @@ fn pass_by(debug: bool, args: Vec<String>) -> i32 {
     };
 
     if debug {
-        println!("full arguments: {:?}", new_args);
+        println!("cmd-wrapper: full arguments: {:?}", new_args);
     }
 
     // read main program from env.
