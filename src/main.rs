@@ -1,9 +1,12 @@
+mod wrapper_config;
+
 use std::collections::HashMap;
-use std::env;
+use std::{env, fs, io, path};
 use regex::Regex;
 use std::process;
 use std::process::exit;
 use git_version::git_version;
+use crate::wrapper_config::Config;
 
 const GIT_VERSION: &str = git_version!();
 
@@ -20,11 +23,11 @@ fn help() {
 
 Available environment variables:
     ${{WRAPPED_CMD}}: the wrapped main command.
-    ${{WRAPPED_REMOVE_DUP_ARGS}} : the duplicated arguments to be removed (only keep the first one).
+    ${{WRAPPED_REMOVE_DUP_ARGS}}: the duplicated arguments to be removed (only keep the first one).
     ${{WRAPPED_REPLACE_ARGS}}: the arguments to be replace.
     ${{WRAPPED_REMOVE_ARGS}}: the arguments to be removed.
-    ${{WRAPPED_PREPEND_ARGS}} : the arguments to be appended in frontend of the arguments list.
-    ${{WRAPPED_PREPEND_IF}} : regex for arguments prepending. Only the regex matched, will prepending be performed.
+    ${{WRAPPED_PREPEND_ARGS}}: the arguments to be appended in front of the arguments list.
+    ${{WRAPPED_PREPEND_IF}}: regex for arguments prepending. Only the regex matched, will prepending be performed.
 ");
 }
 
@@ -55,25 +58,24 @@ fn load_env(name: &str, fallback: &str) -> String {
     return env_val;
 }
 
-fn remove_dup_args(args: &Vec<String>) -> Vec<String> {
-    let remove_dup_args_env = load_env("WRAPPED_REMOVE_DUP_ARGS", "");
-    let remove_dup_args: Vec<String> = vec_of_str(remove_dup_args_env.split(':').collect());
-
-    let mut rm_map = HashMap::new();
-    for rm_arg in &remove_dup_args {
-        rm_map.insert(rm_arg, false);
+fn remove_dup_args(rm_dup_args: Option<Vec<String>>, args: &Vec<String>) -> Vec<String> {
+    let mut rm_map: HashMap<String, bool> = HashMap::new();
+    if !rm_dup_args.is_none() {
+        for rm_arg in rm_dup_args.unwrap() {
+            rm_map.insert(rm_arg.clone(), false);
+        }
     }
 
     let mut new_arg_list: Vec<String> = Vec::new();
     for arg in args {
-        match rm_map.get(&arg) {
+        match rm_map.get(arg) {
             None => {
                 new_arg_list.push(arg.to_string());
             }
             Some(dup) => {
                 if !dup { // first time appear
                     new_arg_list.push(arg.to_string());
-                    rm_map.insert(&arg, true);
+                    rm_map.insert(arg.clone(), true);
                 }
             }
         }
@@ -81,56 +83,63 @@ fn remove_dup_args(args: &Vec<String>) -> Vec<String> {
     return new_arg_list;
 }
 
-fn check_prepend_if(debug: bool, origin_args: &Vec<String>) -> Result<bool, regex::Error> {
-    // check prepend condition
-    let prepend_if_env = load_env("WRAPPED_PREPEND_IF", "");
-    if prepend_if_env == "" {
-        return Ok(true);
-    }
+fn check_prepend_if(debug: bool, prepend_if_env_: Option<String>, origin_args: &Vec<String>) -> Result<bool, regex::Error> {
+    match prepend_if_env_ {
+        None => {
+            return Ok(true);
+        }
+        Some(prepend_if_env) => {
+            // check prepend condition
+            if prepend_if_env == "" {
+                return Ok(true);
+            }
 
-    if debug {
-        println!("cmd-wrapper: the regex: `{}`", prepend_if_env);
-    }
+            if debug {
+                println!("cmd-wrapper: the regex: `{}`", prepend_if_env);
+            }
 
-    let formatted = format!(r"{}", prepend_if_env);
-    match Regex::new(formatted.as_str()) {
-        Ok(r) => {
-            for arg in origin_args {
-                if r.is_match(arg) {
-                    return Ok(true);
+            let formatted = format!(r"{}", prepend_if_env);
+            match Regex::new(formatted.as_str()) {
+                Ok(r) => {
+                    for arg in origin_args {
+                        if r.is_match(arg) {
+                            return Ok(true);
+                        }
+                    }
                 }
+                Err(e) => {
+                    return Err(e);
+                }
+            };
+            return Ok(false);
+        }
+    }
+}
+
+fn parse_prepend_args_env(debug: bool, wrapped_prepend_if: Option<String>, prepend_args_env: Option<Vec<String>>, origin_args: &Vec<String>) -> Vec<String> {
+    match check_prepend_if(debug, wrapped_prepend_if, origin_args) {
+        Ok(ok) => {
+            if ok && !prepend_args_env.is_none() {
+                return prepend_args_env.unwrap();
             }
         }
         Err(e) => {
-            return Err(e);
-        }
-    };
-    return Ok(false);
-}
-
-fn parse_prepend_args_env(debug: bool, origin_args: &Vec<String>) -> Vec<String> {
-    let prepend_args_env = load_env("WRAPPED_PREPEND_ARGS", "");
-    if prepend_args_env != "" {
-        match check_prepend_if(debug, origin_args) {
-            Ok(ok) => {
-                if ok {
-                    let prepend_args: Vec<&str> = prepend_args_env.split(':').collect();
-                    return vec_of_str(prepend_args);
-                }
-            }
-            Err(e) => {
-                println!("match error of env `WRAPPED_PREPEND_IF`: {:?}", e);
-                println!("now we will skip arguments prepending.");
-                return Vec::new();
-            }
+            println!("match error of env `WRAPPED_PREPEND_IF` or `wrapped_prepend_if` field in toml file: {:?}", e);
+            println!("now we will skip arguments prepending.");
+            return Vec::new();
         }
     }
     return Vec::new();
 }
 
-fn pass_by(debug: bool, args: Vec<String>) -> i32 {
-    let removed_args_in_vec: Vec<String> = remove_dup_args(&args);
-    let prepend_args_in_vec: Vec<String> = parse_prepend_args_env(debug, &args);
+fn pass_by(debug: bool, config: Config, args: Vec<String>) -> i32 {
+    if debug {
+        println!("{:?}", config);
+    }
+
+    let removed_args_in_vec: Vec<String> = remove_dup_args(config.wrapper.wrapped_remove_dup_args, &args);
+    let prepend_args_in_vec: Vec<String> = parse_prepend_args_env(debug, config.wrapper.wrapped_prepend_if,
+                                                                  config.wrapper.wrapped_prepend_args, &args);
     let new_args: Vec<String> = if prepend_args_in_vec.len() != 0 {
         // if prepend is set, use it.
         cat(&*prepend_args_in_vec, &*removed_args_in_vec)
@@ -138,18 +147,25 @@ fn pass_by(debug: bool, args: Vec<String>) -> i32 {
         removed_args_in_vec
     };
 
-    if debug {
-        println!("cmd-wrapper: full arguments: {:?}", new_args);
+    // get main program.
+    let wrapper_cmd_cli = env::var("WRAPPED_CMD");
+    let wrapper_cmd_toml = config.wrapper.wrapped_cmd;
+    let wrapper_cmd: String;
+    if wrapper_cmd_cli.is_ok() {
+        wrapper_cmd = wrapper_cmd_cli.unwrap();
+    } else {
+        wrapper_cmd = match wrapper_cmd_toml {
+            Some(lang) => lang,
+            None => {
+                println!("Couldn't use environment variable `WRAPPED_CMD` or `wrapped_cmd` field in toml file");
+                return 1;
+            }
+        };
     }
 
-    // read main program from env.
-    let wrapper_cmd: String = match env::var("WRAPPED_CMD") {
-        Ok(lang) => lang,
-        Err(e) => {
-            println!("Couldn't use environment variable `WRAPPED_CMD` ({})", e);
-            return 1;
-        }
-    };
+    if debug {
+        println!("cmd-wrapper: full arguments:{:?} {:?}", wrapper_cmd, new_args);
+    }
 
     let mut child = process::Command::new(wrapper_cmd)
         .args(new_args)
@@ -169,6 +185,79 @@ fn env() {
     println!("Env:");
 }
 
+const DEFAULT_CONF_FILE: &str = "wrapper.toml";
+
+/**
+ * we firstly try to parse file specified by env `WRAPPED_FILE`, if the file does not exist, an error will occur.
+ * Otherwise, the default wrapped file (DEFAULT_CONF_FILE) will be used (If the default wrapped file does not
+ * exist, just continue running).
+ * Lastly, we will check env, such as `WRAPPED_CMD`. If the corresponding env exists,
+ * it will overwrite the value specified in the wrapped file (env has higher priority).
+ *
+ */
+fn parse_wrapped_file() -> io::Result<Config> {
+    let default_conf = wrapper_config::Config {
+        debug: false,
+        wrapper: wrapper_config::Wrapper {
+            wrapped_cmd: None,
+            wrapped_remove_dup_args: None,
+            wrapped_prepend_args: None,
+            wrapped_prepend_if: None,
+        },
+    };
+
+    let mut wrapper_filepath = load_env("WRAPPED_FILE", "");
+    if wrapper_filepath != "" {
+        let path = path::Path::new(&wrapper_filepath);
+        // quick return: file not exist
+        if !path.is_file() && !path.is_symlink() {
+            println!("{} is not a file or symlink", wrapper_filepath);
+            return Err(io::Error::from(io::ErrorKind::NotFound));
+        }
+    } else {
+        let path = path::Path::new(DEFAULT_CONF_FILE);
+        // quick return: default wrapped file not exist
+        if !path.is_file() && !path.is_symlink() {
+            return Ok(default_conf);
+        } else {
+            wrapper_filepath = DEFAULT_CONF_FILE.parse().unwrap();
+        }
+    }
+
+    let contents = fs::read_to_string(wrapper_filepath)
+        .expect("Should have been able to read the file");
+    let conf: wrapper_config::Config = toml::from_str(&*contents).expect("Failed to parse toml wrapped file.");
+    return Ok(conf);
+}
+
+fn parse_env_or_conf_file() -> Config {
+    let mut conf = parse_wrapped_file().expect("Could not parse wrapper file");
+
+    // setup config: compare with value from env and from toml file.
+    let debug_env = load_env("WRAPPED_DEBUG", "");
+    if debug_env != "" {
+        conf.debug = true;
+    }
+
+    let prepend_if_env = load_env("WRAPPED_PREPEND_IF", "");
+    if prepend_if_env != "" {
+        conf.wrapper.wrapped_prepend_if = Option::from(prepend_if_env);
+    }
+
+    let prepend_args_env = load_env("WRAPPED_PREPEND_ARGS", "");
+    if prepend_args_env != "" {
+        let prepend_args: Vec<String> = vec_of_str(prepend_args_env.split(':').collect());
+        conf.wrapper.wrapped_prepend_args = Option::from(prepend_args);
+    }
+
+    let remove_dup_args_env = load_env("WRAPPED_REMOVE_DUP_ARGS", "");
+    if remove_dup_args_env != "" {
+        let remove_dup_args: Vec<String> = vec_of_str(remove_dup_args_env.split(':').collect());
+        conf.wrapper.wrapped_remove_dup_args = Option::from(remove_dup_args);
+    }
+    return conf;
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     //   debug_to_file(format!("{:?}", args));
@@ -186,11 +275,14 @@ fn main() {
                 "--help" => help(),
                 "--env" => env(),
                 "--debug" => {
-                    exit(pass_by(true, args[2..].to_vec()));
+                    // read config from file or env
+                    let conf: wrapper_config::Config = parse_env_or_conf_file();
+                    exit(pass_by(true, conf, args[2..].to_vec()));
                 }
                 "-V" => version(args[0].clone()),
                 _ => {
-                    exit(pass_by(false, args[1..].to_vec()));
+                    let conf: wrapper_config::Config = parse_env_or_conf_file();
+                    exit(pass_by(conf.debug, conf, args[1..].to_vec()));
                 }
             }
         }
